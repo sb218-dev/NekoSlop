@@ -7,6 +7,10 @@
 
 #include <QInputDialog>
 #include <QUrlQuery>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QRegularExpression>
 
 #ifndef NKR_NO_YAML
 
@@ -34,22 +38,749 @@ namespace NekoGui_sub {
         }
     }
 
+    bool ParseAmneziaWGConf(const QString &confText, QJsonObject &outbound, QString &name) {
+        if (!confText.contains("[Interface]", Qt::CaseInsensitive)) {
+            return false;
+        }
+        
+        QJsonObject peerObj;
+        QJsonArray peersArray;
+        QJsonArray localAddressArray;
+        
+        QString privateKey;
+        int mtu = 1408;
+        int jc = 0, jmin = 0, jmax = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0;
+        QString h1, h2, h3, h4;
+        QString i1, i2, i3, i4, i5;
+        
+        QString server;
+        int server_port = 51820;
+        QString publicKey;
+        QString presharedKey;
+        QJsonArray allowedIPsArray;
+        int keepalive = 0;
+
+        auto lines = confText.split('\n');
+        QString currentSection;
+        
+        for (auto line : lines) {
+            line = line.trimmed();
+            if (line.isEmpty() || line.startsWith('#') || line.startsWith(';')) {
+                continue;
+            }
+            if (line.startsWith('[') && line.endsWith(']')) {
+                currentSection = line.mid(1, line.length() - 2).trimmed().toLower();
+                continue;
+            }
+            
+            auto parts = line.split('=');
+            if (parts.length() < 2) continue;
+            auto key = parts[0].trimmed().toLower();
+            auto val = line.mid(parts[0].length() + 1).trimmed();
+            
+            if (currentSection == "interface") {
+                if (key == "privatekey") privateKey = val;
+                else if (key == "address") {
+                    for (const auto &addr : val.split(',')) {
+                        localAddressArray.append(addr.trimmed());
+                    }
+                }
+                else if (key == "mtu") mtu = val.toInt();
+                else if (key == "jc") jc = val.toInt();
+                else if (key == "jmin") jmin = val.toInt();
+                else if (key == "jmax") jmax = val.toInt();
+                else if (key == "s1") s1 = val.toInt();
+                else if (key == "s2") s2 = val.toInt();
+                else if (key == "s3") s3 = val.toInt();
+                else if (key == "s4") s4 = val.toInt();
+                else if (key == "h1") h1 = val;
+                else if (key == "h2") h2 = val;
+                else if (key == "h3") h3 = val;
+                else if (key == "h4") h4 = val;
+                else if (key == "i1") i1 = val;
+                else if (key == "i2") i2 = val;
+                else if (key == "i3") i3 = val;
+                else if (key == "i4") i4 = val;
+                else if (key == "i5") i5 = val;
+            } else if (currentSection == "peer") {
+                if (key == "publickey") publicKey = val;
+                else if (key == "presharedkey") presharedKey = val;
+                else if (key == "allowedips") {
+                    for (const auto &ip : val.split(',')) {
+                        allowedIPsArray.append(ip.trimmed());
+                    }
+                }
+                else if (key == "endpoint") {
+                    auto endpointParts = val.split(':');
+                    if (endpointParts.length() >= 2) {
+                        server_port = endpointParts.last().toInt();
+                        endpointParts.removeLast();
+                        server = endpointParts.join(':').replace("[", "").replace("]", "");
+                    }
+                }
+                else if (key == "persistentkeepalive") {
+                    keepalive = val.toInt();
+                }
+            }
+        }
+        
+        if (privateKey.isEmpty() || publicKey.isEmpty() || server.isEmpty()) {
+            return false;
+        }
+        
+        outbound["type"] = "awg";
+        outbound["server"] = server;
+        outbound["server_port"] = server_port;
+        outbound["private_key"] = privateKey;
+        outbound["local_address"] = localAddressArray;
+        if (mtu != 1408) outbound["mtu"] = mtu;
+        if (jc != 0) outbound["jc"] = jc;
+        if (jmin != 0) outbound["jmin"] = jmin;
+        if (jmax != 0) outbound["jmax"] = jmax;
+        if (s1 != 0) outbound["s1"] = s1;
+        if (s2 != 0) outbound["s2"] = s2;
+        if (s3 != 0) outbound["s3"] = s3;
+        if (s4 != 0) outbound["s4"] = s4;
+        if (!h1.isEmpty()) outbound["h1"] = h1;
+        if (!h2.isEmpty()) outbound["h2"] = h2;
+        if (!h3.isEmpty()) outbound["h3"] = h3;
+        if (!h4.isEmpty()) outbound["h4"] = h4;
+        if (!i1.isEmpty()) outbound["i1"] = i1;
+        if (!i2.isEmpty()) outbound["i2"] = i2;
+        if (!i3.isEmpty()) outbound["i3"] = i3;
+        if (!i4.isEmpty()) outbound["i4"] = i4;
+        if (!i5.isEmpty()) outbound["i5"] = i5;
+        
+        QJsonObject peer;
+        peer["public_key"] = publicKey;
+        if (!presharedKey.isEmpty()) peer["pre_shared_key"] = presharedKey;
+        peer["allowed_ips"] = allowedIPsArray;
+        if (keepalive != 0) peer["persistent_keepalive_interval"] = keepalive;
+        peersArray.append(peer);
+        
+        outbound["peers"] = peersArray;
+        
+        name = "AmneziaWG_" + server;
+        return true;
+    }
+
+    bool ParseAmneziaWGLink(const QString &link, QJsonObject &outbound, QString &name) {
+        auto url = QUrl(link);
+        if (!url.isValid()) return false;
+        if (url.scheme() != "awg" && url.scheme() != "wireguard" && url.scheme() != "wg") return false;
+        
+        auto query = QUrlQuery(url.query());
+        
+        QString publicKey = url.userName();
+        QString server = url.host();
+        int server_port = url.port();
+        if (server_port == -1) server_port = 51820;
+        
+        if (publicKey.isEmpty()) {
+            publicKey = query.queryItemValue("publickey");
+        }
+        
+        QString privateKey = query.queryItemValue("privatekey");
+        if (privateKey.isEmpty()) {
+            privateKey = query.queryItemValue("private_key");
+        }
+        
+        QJsonArray localAddressArray;
+        auto addressVal = query.queryItemValue("address");
+        if (!addressVal.isEmpty()) {
+            for (const auto &addr : addressVal.split(',')) {
+                localAddressArray.append(addr.trimmed());
+            }
+        }
+        
+        QJsonArray allowedIPsArray;
+        auto allowedVal = query.queryItemValue("allowedips");
+        if (allowedVal.isEmpty()) allowedVal = query.queryItemValue("allowed_ips");
+        if (!allowedVal.isEmpty()) {
+            for (const auto &ip : allowedVal.split(',')) {
+                allowedIPsArray.append(ip.trimmed());
+            }
+        } else {
+            allowedIPsArray.append("0.0.0.0/0");
+        }
+        
+        int mtu = query.queryItemValue("mtu").toInt();
+        if (mtu == 0) mtu = 1408;
+        
+        int jc = query.queryItemValue("jc").toInt();
+        int jmin = query.queryItemValue("jmin").toInt();
+        int jmax = query.queryItemValue("jmax").toInt();
+        int s1 = query.queryItemValue("s1").toInt();
+        int s2 = query.queryItemValue("s2").toInt();
+        int s3 = query.queryItemValue("s3").toInt();
+        int s4 = query.queryItemValue("s4").toInt();
+        
+        QString h1 = query.queryItemValue("h1");
+        QString h2 = query.queryItemValue("h2");
+        QString h3 = query.queryItemValue("h3");
+        QString h4 = query.queryItemValue("h4");
+        QString i1 = query.queryItemValue("i1");
+        QString i2 = query.queryItemValue("i2");
+        QString i3 = query.queryItemValue("i3");
+        QString i4 = query.queryItemValue("i4");
+        QString i5 = query.queryItemValue("i5");
+        
+        QString presharedKey = query.queryItemValue("presharedkey");
+        if (presharedKey.isEmpty()) presharedKey = query.queryItemValue("pre_shared_key");
+        
+        int keepalive = query.queryItemValue("persistentkeepalive").toInt();
+        if (keepalive == 0) keepalive = query.queryItemValue("persistent_keepalive_interval").toInt();
+        
+        if (privateKey.isEmpty() || publicKey.isEmpty() || server.isEmpty()) {
+            return false;
+        }
+        
+        outbound["type"] = "awg";
+        outbound["server"] = server;
+        outbound["server_port"] = server_port;
+        outbound["private_key"] = privateKey;
+        outbound["local_address"] = localAddressArray;
+        if (mtu != 1408) outbound["mtu"] = mtu;
+        if (jc != 0) outbound["jc"] = jc;
+        if (jmin != 0) outbound["jmin"] = jmin;
+        if (jmax != 0) outbound["jmax"] = jmax;
+        if (s1 != 0) outbound["s1"] = s1;
+        if (s2 != 0) outbound["s2"] = s2;
+        if (s3 != 0) outbound["s3"] = s3;
+        if (s4 != 0) outbound["s4"] = s4;
+        if (!h1.isEmpty()) outbound["h1"] = h1;
+        if (!h2.isEmpty()) outbound["h2"] = h2;
+        if (!h3.isEmpty()) outbound["h3"] = h3;
+        if (!h4.isEmpty()) outbound["h4"] = h4;
+        if (!i1.isEmpty()) outbound["i1"] = i1;
+        if (!i2.isEmpty()) outbound["i2"] = i2;
+        if (!i3.isEmpty()) outbound["i3"] = i3;
+        if (!i4.isEmpty()) outbound["i4"] = i4;
+        if (!i5.isEmpty()) outbound["i5"] = i5;
+        
+        QJsonObject peer;
+        peer["public_key"] = publicKey;
+        if (!presharedKey.isEmpty()) peer["pre_shared_key"] = presharedKey;
+        peer["allowed_ips"] = allowedIPsArray;
+        if (keepalive != 0) peer["persistent_keepalive_interval"] = keepalive;
+        
+        QJsonArray peersArray;
+        peersArray.append(peer);
+        outbound["peers"] = peersArray;
+        
+        name = url.fragment(QUrl::FullyDecoded);
+        if (name.isEmpty()) {
+            name = "AmneziaWG_" + server;
+        }
+        
+        return true;
+    }
+
+    std::shared_ptr<NekoGui::ProxyEntity> ParseXrayOutbound(const QJsonObject &outbound, const QString &remarks) {
+        auto protocol = outbound["protocol"].toString().toLower();
+        auto tag = outbound["tag"].toString();
+
+        if (protocol == "freedom" || protocol == "blackhole" || protocol == "dns" || protocol == "loopback") {
+            return nullptr;
+        }
+
+        std::shared_ptr<NekoGui::ProxyEntity> ent = nullptr;
+
+        if (protocol == "vless" || protocol == "trojan") {
+            ent = NekoGui::ProfileManager::NewProxyEntity(protocol == "vless" ? "vless" : "trojan");
+            auto bean = ent->TrojanVLESSBean();
+            auto settings = outbound["settings"].toObject();
+            auto vnext = settings["vnext"].toArray();
+            if (!vnext.isEmpty()) {
+                auto serverObj = vnext[0].toObject();
+                ent->bean->serverAddress = serverObj["address"].toString();
+                ent->bean->serverPort = serverObj["port"].toInt(443);
+                auto users = serverObj["users"].toArray();
+                if (!users.isEmpty()) {
+                    auto userObj = users[0].toObject();
+                    bean->password = userObj["id"].toString();
+                    if (bean->password.isEmpty()) bean->password = userObj["password"].toString();
+                    bean->flow = userObj["flow"].toString();
+                }
+            } else {
+                auto servers = settings["servers"].toArray();
+                if (!servers.isEmpty()) {
+                    auto serverObj = servers[0].toObject();
+                    ent->bean->serverAddress = serverObj["address"].toString();
+                    ent->bean->serverPort = serverObj["port"].toInt(443);
+                    bean->password = serverObj["password"].toString();
+                }
+            }
+
+            auto streamSettings = outbound["streamSettings"].toObject();
+            auto net = streamSettings["network"].toString().toLower();
+            if (net == "raw" || net.isEmpty()) net = "tcp";
+            bean->stream->network = net;
+
+            auto sec = streamSettings["security"].toString().toLower();
+            if (sec == "reality" || sec == "tls") {
+                bean->stream->security = "tls";
+                if (sec == "reality") {
+                    auto realitySettings = streamSettings["realitySettings"].toObject();
+                    bean->stream->reality_pbk = realitySettings["password"].toString();
+                    if (bean->stream->reality_pbk.isEmpty()) bean->stream->reality_pbk = realitySettings["publicKey"].toString();
+                    if (bean->stream->reality_pbk.isEmpty()) bean->stream->reality_pbk = realitySettings["public_key"].toString();
+
+                    auto shortIdVal = realitySettings["shortId"];
+                    if (shortIdVal.isString()) bean->stream->reality_sid = shortIdVal.toString();
+                    else if (shortIdVal.isArray() && !shortIdVal.toArray().isEmpty()) bean->stream->reality_sid = shortIdVal.toArray()[0].toString();
+                    if (bean->stream->reality_sid.isEmpty()) bean->stream->reality_sid = realitySettings["short_id"].toString();
+
+                    bean->stream->reality_spx = realitySettings["spiderX"].toString("/");
+                    bean->stream->sni = realitySettings["serverName"].toString();
+                    bean->stream->utlsFingerprint = realitySettings["fingerprint"].toString();
+                }
+
+                auto tlsSettings = streamSettings["tlsSettings"].toObject();
+                if (!tlsSettings.isEmpty()) {
+                    if (bean->stream->sni.isEmpty()) bean->stream->sni = tlsSettings["serverName"].toString();
+                    if (bean->stream->utlsFingerprint.isEmpty()) bean->stream->utlsFingerprint = tlsSettings["fingerprint"].toString();
+                    bean->stream->allow_insecure = tlsSettings["allowInsecure"].toBool();
+                    auto alpnArr = tlsSettings["alpn"].toArray();
+                    QStringList alpnList;
+                    for (const auto &a : alpnArr) alpnList << a.toString();
+                    if (!alpnList.isEmpty()) bean->stream->alpn = alpnList.join(",");
+                }
+            } else {
+                bean->stream->security = "";
+            }
+
+            if (bean->stream->utlsFingerprint.isEmpty()) {
+                bean->stream->utlsFingerprint = NekoGui::dataStore->utlsFingerprint;
+            }
+
+            if (net == "xhttp") {
+                auto xhttpSettings = streamSettings["xhttpSettings"].toObject();
+                bean->stream->path = xhttpSettings["path"].toString();
+                bean->stream->host = xhttpSettings["host"].toString();
+            } else if (net == "ws") {
+                auto wsSettings = streamSettings["wsSettings"].toObject();
+                bean->stream->path = wsSettings["path"].toString();
+                auto headers = wsSettings["headers"].toObject();
+                bean->stream->host = headers["Host"].toString();
+            } else if (net == "grpc") {
+                auto grpcSettings = streamSettings["grpcSettings"].toObject();
+                bean->stream->path = grpcSettings["serviceName"].toString();
+            } else if (net == "http" || net == "h2") {
+                auto httpSettings = streamSettings["httpSettings"].toObject();
+                bean->stream->path = httpSettings["path"].toString();
+                auto hostArr = httpSettings["host"].toArray();
+                if (!hostArr.isEmpty()) bean->stream->host = hostArr[0].toString();
+            } else if (net == "tcp") {
+                auto tcpSettings = streamSettings["tcpSettings"].toObject();
+                auto header = tcpSettings["header"].toObject();
+                if (header["type"].toString().toLower() == "http") {
+                    bean->stream->header_type = "http";
+                    auto request = header["request"].toObject();
+                    auto pathArr = request["path"].toArray();
+                    if (!pathArr.isEmpty()) bean->stream->path = pathArr[0].toString();
+                    auto headers = request["headers"].toObject();
+                    auto hostArr = headers["Host"].toArray();
+                    if (!hostArr.isEmpty()) bean->stream->host = hostArr[0].toString();
+                }
+            }
+
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty() && tag != "proxy") {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = (protocol == "vless" ? "VLESS_" : "Trojan_") + ent->bean->serverAddress;
+            }
+        } else if (protocol == "hysteria" || protocol == "hysteria2") {
+            ent = NekoGui::ProfileManager::NewProxyEntity("hysteria2");
+            auto bean = ent->QUICBean();
+            auto settings = outbound["settings"].toObject();
+            ent->bean->serverAddress = settings["address"].toString();
+            ent->bean->serverPort = settings["port"].toInt(443);
+
+            auto streamSettings = outbound["streamSettings"].toObject();
+            auto hysteriaSettings = streamSettings["hysteriaSettings"].toObject();
+            bean->password = hysteriaSettings["auth"].toString();
+            if (bean->password.isEmpty()) bean->password = settings["auth"].toString();
+            if (bean->password.isEmpty()) bean->password = settings["password"].toString();
+
+            auto tlsSettings = streamSettings["tlsSettings"].toObject();
+            bean->sni = tlsSettings["serverName"].toString();
+            bean->allowInsecure = tlsSettings["allowInsecure"].toBool();
+            bean->alpn = "h3";
+
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty() && tag != "proxy") {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = "HYSTERIA2_" + ent->bean->serverAddress;
+            }
+        } else if (protocol == "vmess") {
+            ent = NekoGui::ProfileManager::NewProxyEntity("vmess");
+            auto bean = ent->VMessBean();
+            auto settings = outbound["settings"].toObject();
+            auto vnext = settings["vnext"].toArray();
+            if (!vnext.isEmpty()) {
+                auto serverObj = vnext[0].toObject();
+                ent->bean->serverAddress = serverObj["address"].toString();
+                ent->bean->serverPort = serverObj["port"].toInt(443);
+                auto users = serverObj["users"].toArray();
+                if (!users.isEmpty()) {
+                    auto userObj = users[0].toObject();
+                    bean->uuid = userObj["id"].toString();
+                    bean->aid = userObj["alterId"].toInt(0);
+                    bean->security = userObj["security"].toString("auto");
+                }
+            }
+            auto streamSettings = outbound["streamSettings"].toObject();
+            auto net = streamSettings["network"].toString().toLower();
+            if (net == "raw" || net.isEmpty()) net = "tcp";
+            bean->stream->network = net;
+            auto sec = streamSettings["security"].toString().toLower();
+            if (sec == "tls") {
+                bean->stream->security = "tls";
+                auto tlsSettings = streamSettings["tlsSettings"].toObject();
+                bean->stream->sni = tlsSettings["serverName"].toString();
+                bean->stream->allow_insecure = tlsSettings["allowInsecure"].toBool();
+            }
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty() && tag != "proxy") {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = "VMess_" + ent->bean->serverAddress;
+            }
+        } else if (protocol == "shadowsocks") {
+            ent = NekoGui::ProfileManager::NewProxyEntity("shadowsocks");
+            auto bean = ent->ShadowSocksBean();
+            auto settings = outbound["settings"].toObject();
+            auto servers = settings["servers"].toArray();
+            if (!servers.isEmpty()) {
+                auto serverObj = servers[0].toObject();
+                ent->bean->serverAddress = serverObj["address"].toString();
+                ent->bean->serverPort = serverObj["port"].toInt(8388);
+                bean->method = serverObj["method"].toString();
+                bean->password = serverObj["password"].toString();
+            }
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty() && tag != "proxy") {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = "Shadowsocks_" + ent->bean->serverAddress;
+            }
+        } else if (protocol == "socks" || protocol == "http") {
+            ent = NekoGui::ProfileManager::NewProxyEntity(protocol == "http" ? "http" : "socks");
+            auto bean = ent->SocksHTTPBean();
+            auto settings = outbound["settings"].toObject();
+            auto servers = settings["servers"].toArray();
+            if (!servers.isEmpty()) {
+                auto serverObj = servers[0].toObject();
+                ent->bean->serverAddress = serverObj["address"].toString();
+                ent->bean->serverPort = serverObj["port"].toInt(protocol == "http" ? 80 : 1080);
+                auto users = serverObj["users"].toArray();
+                if (!users.isEmpty()) {
+                    auto userObj = users[0].toObject();
+                    bean->username = userObj["user"].toString();
+                    bean->password = userObj["pass"].toString();
+                }
+            }
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty() && tag != "proxy") {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = (protocol == "http" ? "HTTP_" : "SOCKS_") + ent->bean->serverAddress;
+            }
+        }
+
+        if (ent != nullptr && (ent->bean->serverAddress.isEmpty() || ent->bean->serverPort <= 0)) {
+            return nullptr;
+        }
+
+        return ent;
+    }
+
+    std::shared_ptr<NekoGui::ProxyEntity> ParseSingBoxOutbound(const QJsonObject &outbound, const QString &remarks) {
+        auto type = outbound["type"].toString().toLower();
+        auto tag = outbound["tag"].toString();
+
+        if (type == "direct" || type == "block" || type == "dns" || type == "urltest" || type == "selector") {
+            return nullptr;
+        }
+
+        std::shared_ptr<NekoGui::ProxyEntity> ent = nullptr;
+
+        if (type == "vless" || type == "trojan") {
+            ent = NekoGui::ProfileManager::NewProxyEntity(type == "vless" ? "vless" : "trojan");
+            auto bean = ent->TrojanVLESSBean();
+            ent->bean->serverAddress = outbound["server"].toString();
+            ent->bean->serverPort = outbound["server_port"].toInt(443);
+            if (type == "vless") {
+                bean->password = outbound["uuid"].toString();
+                bean->flow = outbound["flow"].toString();
+            } else {
+                bean->password = outbound["password"].toString();
+            }
+
+            auto tls = outbound["tls"].toObject();
+            if (tls["enabled"].toBool()) {
+                bean->stream->security = "tls";
+                bean->stream->sni = tls["server_name"].toString();
+                bean->stream->allow_insecure = tls["insecure"].toBool();
+                auto reality = tls["reality"].toObject();
+                if (reality["enabled"].toBool()) {
+                    bean->stream->reality_pbk = reality["public_key"].toString();
+                    bean->stream->reality_sid = reality["short_id"].toString();
+                }
+                auto utls = tls["utls"].toObject();
+                if (utls["enabled"].toBool()) {
+                    bean->stream->utlsFingerprint = utls["fingerprint"].toString();
+                }
+                auto alpnArr = tls["alpn"].toArray();
+                QStringList alpnList;
+                for (const auto &a : alpnArr) alpnList << a.toString();
+                if (!alpnList.isEmpty()) bean->stream->alpn = alpnList.join(",");
+            }
+
+            auto transport = outbound["transport"].toObject();
+            auto tType = transport["type"].toString().toLower();
+            if (!tType.isEmpty()) {
+                bean->stream->network = tType;
+                bean->stream->path = transport["path"].toString();
+                if (tType == "grpc") {
+                    bean->stream->path = transport["service_name"].toString();
+                }
+                auto hostArr = transport["host"].toArray();
+                if (!hostArr.isEmpty()) bean->stream->host = hostArr[0].toString();
+                else if (transport["headers"].isObject()) {
+                    bean->stream->host = transport["headers"].toObject()["Host"].toString();
+                }
+            }
+
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty()) {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = (type == "vless" ? "VLESS_" : "Trojan_") + ent->bean->serverAddress;
+            }
+        } else if (type == "hysteria2") {
+            ent = NekoGui::ProfileManager::NewProxyEntity("hysteria2");
+            auto bean = ent->QUICBean();
+            ent->bean->serverAddress = outbound["server"].toString();
+            ent->bean->serverPort = outbound["server_port"].toInt(443);
+            bean->password = outbound["password"].toString();
+            auto tls = outbound["tls"].toObject();
+            bean->sni = tls["server_name"].toString();
+            bean->allowInsecure = tls["insecure"].toBool();
+            bean->alpn = "h3";
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty()) {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = "HYSTERIA2_" + ent->bean->serverAddress;
+            }
+        } else if (type == "shadowsocks") {
+            ent = NekoGui::ProfileManager::NewProxyEntity("shadowsocks");
+            auto bean = ent->ShadowSocksBean();
+            ent->bean->serverAddress = outbound["server"].toString();
+            ent->bean->serverPort = outbound["server_port"].toInt(8388);
+            bean->method = outbound["method"].toString();
+            bean->password = outbound["password"].toString();
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty()) {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = "Shadowsocks_" + ent->bean->serverAddress;
+            }
+        } else if (type == "vmess") {
+            ent = NekoGui::ProfileManager::NewProxyEntity("vmess");
+            auto bean = ent->VMessBean();
+            ent->bean->serverAddress = outbound["server"].toString();
+            ent->bean->serverPort = outbound["server_port"].toInt(443);
+            bean->uuid = outbound["uuid"].toString();
+            bean->security = outbound["security"].toString("auto");
+            bean->aid = outbound["alter_id"].toInt(0);
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty()) {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = "VMess_" + ent->bean->serverAddress;
+            }
+        } else if (type == "tuic") {
+            ent = NekoGui::ProfileManager::NewProxyEntity("tuic");
+            auto bean = ent->QUICBean();
+            ent->bean->serverAddress = outbound["server"].toString();
+            ent->bean->serverPort = outbound["server_port"].toInt(443);
+            bean->uuid = outbound["uuid"].toString();
+            bean->password = outbound["password"].toString();
+            bean->congestionControl = outbound["congestion_control"].toString();
+            bean->udpRelayMode = outbound["udp_relay_mode"].toString();
+            bean->zeroRttHandshake = outbound["zero_rtt_handshake"].toBool();
+            auto tls = outbound["tls"].toObject();
+            bean->sni = tls["server_name"].toString();
+            bean->allowInsecure = tls["insecure"].toBool();
+            if (!remarks.isEmpty()) {
+                ent->bean->name = remarks;
+            } else if (!tag.isEmpty()) {
+                ent->bean->name = tag;
+            } else {
+                ent->bean->name = "TUIC_" + ent->bean->serverAddress;
+            }
+        } else if (type == "awg" || type == "wireguard") {
+            ent = NekoGui::ProfileManager::NewProxyEntity("custom");
+            auto bean = ent->CustomBean();
+            ent->bean->name = !remarks.isEmpty() ? remarks : (!tag.isEmpty() ? tag : "AWG_" + outbound["server"].toString());
+            bean->core = "internal";
+            bean->config_simple = QJsonObject2QString(outbound, false);
+            ent->bean->serverAddress = outbound["server"].toString();
+            ent->bean->serverPort = outbound["server_port"].toInt(51820);
+        }
+
+        if (ent != nullptr && (ent->bean->serverAddress.isEmpty() || ent->bean->serverPort <= 0)) {
+            return nullptr;
+        }
+
+        return ent;
+    }
+
     void RawUpdater::update(const QString &str) {
+        auto trimmed = str.trimmed();
+        if (trimmed.isEmpty()) return;
+
+        // HAPP link support: happ://add/<url>
+        if (trimmed.startsWith("happ://add/", Qt::CaseInsensitive)) {
+            auto subUrl = trimmed.mid(QStringLiteral("happ://add/").length()).trimmed();
+            if (subUrl.startsWith("http://", Qt::CaseInsensitive) || subUrl.startsWith("https://", Qt::CaseInsensitive)) {
+                auto resp = NekoGui_network::NetworkRequestHelper::HttpGet(QUrl(subUrl));
+                if (resp.error.isEmpty() && !resp.data.isEmpty()) {
+                    update(QString::fromUtf8(resp.data));
+                    return;
+                }
+            }
+        }
+
         // Base64 encoded subscription
-        if (auto str2 = DecodeB64IfValid(str); !str2.isEmpty()) {
+        if (auto str2 = DecodeB64IfValid(trimmed); !str2.isEmpty() && str2 != trimmed) {
             update(str2);
             return;
         }
 
+        // JSON format (e.g. autoXRAY subscription JSON or Xray / sing-box client config)
+        if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+            QJsonParseError err;
+            auto doc = QJsonDocument::fromJson(trimmed.toUtf8(), &err);
+            if (!doc.isNull() && err.error == QJsonParseError::NoError) {
+                if (doc.isArray()) {
+                    auto arr = doc.array();
+                    for (const auto &val : arr) {
+                        if (val.isObject()) {
+                            auto obj = val.toObject();
+                            QString remarks = obj["remarks"].toString();
+                            if (remarks.isEmpty()) remarks = obj["remark"].toString();
+                            if (remarks.isEmpty()) remarks = obj["tag"].toString();
+
+                            if (obj.contains("outbounds")) {
+                                auto outbounds = obj["outbounds"].toArray();
+                                for (const auto &outVal : outbounds) {
+                                    if (outVal.isObject()) {
+                                        auto outObj = outVal.toObject();
+                                        auto ent = ParseXrayOutbound(outObj, remarks);
+                                        if (ent == nullptr) {
+                                            ent = ParseSingBoxOutbound(outObj, remarks);
+                                        }
+                                        if (ent != nullptr) {
+                                            RawUpdater_FixEnt(ent);
+                                            NekoGui::profileManager->AddProfile(ent, gid_add_to);
+                                            updated_order += ent;
+                                        }
+                                    }
+                                }
+                            } else {
+                                auto ent = ParseXrayOutbound(obj, remarks);
+                                if (ent == nullptr) {
+                                    ent = ParseSingBoxOutbound(obj, remarks);
+                                }
+                                if (ent != nullptr) {
+                                    RawUpdater_FixEnt(ent);
+                                    NekoGui::profileManager->AddProfile(ent, gid_add_to);
+                                    updated_order += ent;
+                                }
+                            }
+                        }
+                    }
+                    return;
+                } else if (doc.isObject()) {
+                    auto obj = doc.object();
+                    QString remarks = obj["remarks"].toString();
+                    if (remarks.isEmpty()) remarks = obj["remark"].toString();
+                    if (remarks.isEmpty()) remarks = obj["tag"].toString();
+
+                    if (obj.contains("outbounds")) {
+                        auto outbounds = obj["outbounds"].toArray();
+                        for (const auto &outVal : outbounds) {
+                            if (outVal.isObject()) {
+                                auto outObj = outVal.toObject();
+                                auto ent = ParseXrayOutbound(outObj, remarks);
+                                if (ent == nullptr) {
+                                    ent = ParseSingBoxOutbound(outObj, remarks);
+                                }
+                                if (ent != nullptr) {
+                                    RawUpdater_FixEnt(ent);
+                                    NekoGui::profileManager->AddProfile(ent, gid_add_to);
+                                    updated_order += ent;
+                                }
+                            }
+                        }
+                        return;
+                    } else {
+                        auto ent = ParseXrayOutbound(obj, remarks);
+                        if (ent == nullptr) {
+                            ent = ParseSingBoxOutbound(obj, remarks);
+                        }
+                        if (ent != nullptr) {
+                            RawUpdater_FixEnt(ent);
+                            NekoGui::profileManager->AddProfile(ent, gid_add_to);
+                            updated_order += ent;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // HTML content or multi-link text extraction
+        if (trimmed.contains("<html", Qt::CaseInsensitive) || trimmed.contains("<!DOCTYPE", Qt::CaseInsensitive) ||
+            trimmed.contains("config-code", Qt::CaseInsensitive) || trimmed.contains("<br", Qt::CaseInsensitive)) {
+            static const QRegularExpression linkRe(QStringLiteral("(?:vless|vmess|ss|trojan|hysteria2|hy2|tuic|awg|wireguard|wg|socks5|socks|naive\\+https|naive\\+quic|nekoslop)://[^\\s\"'<>]+"));
+            auto matches = linkRe.globalMatch(trimmed);
+            bool foundAny = false;
+            while (matches.hasNext()) {
+                auto match = matches.next();
+                auto linkStr = match.captured(0).trimmed();
+                if (!linkStr.isEmpty()) {
+                    foundAny = true;
+                    update(linkStr);
+                }
+            }
+            if (foundAny) return;
+        }
+
         // Clash
-        if (str.contains("proxies:")) {
-            updateClash(str);
+        if (trimmed.contains("proxies:")) {
+            updateClash(trimmed);
             return;
         }
 
         // Multi line
-        if (str.count("\n") > 0) {
-            auto list = str.split("\n");
+        if (trimmed.count("\n") > 0) {
+            auto list = trimmed.split("\n");
             for (const auto &str2: list) {
                 update(str2.trimmed());
             }
@@ -58,6 +789,28 @@ namespace NekoGui_sub {
 
         std::shared_ptr<NekoGui::ProxyEntity> ent;
         bool needFix = true;
+
+        // AmneziaWG conf file or wireguard / awg link
+        QJsonObject awgOutbound;
+        QString awgName;
+        bool isAwg = false;
+        
+        if (str.startsWith("awg://") || str.startsWith("wireguard://") || str.startsWith("wg://")) {
+            isAwg = ParseAmneziaWGLink(str, awgOutbound, awgName);
+        } else if (str.contains("[Interface]", Qt::CaseInsensitive)) {
+            isAwg = ParseAmneziaWGConf(str, awgOutbound, awgName);
+        }
+        
+        if (isAwg) {
+            needFix = false;
+            ent = NekoGui::ProfileManager::NewProxyEntity("custom");
+            auto bean = ent->CustomBean();
+            ent->bean->name = awgName;
+            bean->core = "internal";
+            bean->config_simple = QJsonObject2QString(awgOutbound, false);
+            ent->bean->serverAddress = awgOutbound["server"].toString();
+            ent->bean->serverPort = awgOutbound["server_port"].toInt();
+        }
 
         // Nekoray format
         if (str.startsWith("nekoslop://")) {
@@ -467,8 +1220,12 @@ namespace NekoGui_sub {
         bool asURL = false;
         bool createNewGroup = false;
 
-        if (_sub_gid < 0 && (content.startsWith("http://") || content.startsWith("https://"))) {
-            if (content.contains("/sub/") || content.contains("sub?")) {
+        if (_sub_gid < 0 && (content.startsWith("http://", Qt::CaseInsensitive) || content.startsWith("https://", Qt::CaseInsensitive) || content.startsWith("happ://add/", Qt::CaseInsensitive))) {
+            if (content.startsWith("happ://add/", Qt::CaseInsensitive)) {
+                content = content.mid(QString("happ://add/").length()).trimmed();
+                asURL = true;
+                createNewGroup = true;
+            } else if (content.contains("/sub/") || content.contains("sub?") || content.endsWith(".json", Qt::CaseInsensitive) || content.endsWith(".html", Qt::CaseInsensitive) || content.endsWith(".txt", Qt::CaseInsensitive)) {
                 asURL = true;
                 createNewGroup = true;
             } else {

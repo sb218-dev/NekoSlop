@@ -40,6 +40,7 @@ namespace NekoGui_network {
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 #endif
         request.setHeader(QNetworkRequest::KnownHeaders::UserAgentHeader, NekoGui::dataStore->GetUserAgent());
+        request.setRawHeader("Accept", "application/json, text/plain, text/html, */*");
         // Send stable machine unique ID for HWID-based subscription services (e.g. Remnawave/moonshard.org)
         auto hwid = QSysInfo::machineUniqueId();
         if (!hwid.isEmpty()) {

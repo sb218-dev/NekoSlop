@@ -55,9 +55,11 @@ namespace NekoGui_fmt {
 
         // security
 
-        auto type = GetQueryValue(query, "type", "tcp");
+        auto type = GetQueryValue(query, "type", "tcp").toLower();
         if (type == "h2") {
             type = "http";
+        } else if (type == "raw") {
+            type = "tcp";
         }
         stream->network = type;
 
@@ -84,7 +86,7 @@ namespace NekoGui_fmt {
         if (stream->network == "ws") {
             stream->path = GetQueryValue(query, "path", "");
             stream->host = GetQueryValue(query, "host", "");
-        } else if (stream->network == "http") {
+        } else if (stream->network == "http" || stream->network == "xhttp") {
             stream->path = GetQueryValue(query, "path", "");
             stream->host = GetQueryValue(query, "host", "").replace("|", ",");
         } else if (stream->network == "httpupgrade") {
@@ -92,6 +94,7 @@ namespace NekoGui_fmt {
             stream->host = GetQueryValue(query, "host", "");
         } else if (stream->network == "grpc") {
             stream->path = GetQueryValue(query, "serviceName", "");
+            if (stream->path.isEmpty()) stream->path = GetQueryValue(query, "path", "");
         } else if (stream->network == "tcp") {
             if (GetQueryValue(query, "headerType") == "http") {
                 stream->header_type = "http";
@@ -103,6 +106,10 @@ namespace NekoGui_fmt {
         // protocol
         if (proxy_type == proxy_VLESS) {
             flow = GetQueryValue(query, "flow", "");
+        }
+
+        if (name.isEmpty()) {
+            name = (proxy_type == proxy_VLESS ? "VLESS_" : "Trojan_") + serverAddress;
         }
 
         return !(password.isEmpty() || serverAddress.isEmpty());
@@ -254,7 +261,10 @@ namespace NekoGui_fmt {
     bool QUICBean::TryParseLink(const QString &link) {
         auto url = QUrl(link);
         auto query = QUrlQuery(url.query());
-        if (url.host().isEmpty() || url.port() == -1) return false;
+        if (url.host().isEmpty()) return false;
+
+        int port = url.port();
+        if (port == -1) port = 443;
 
         if (url.scheme() == "tuic") {
             // by daeuniverse
@@ -262,8 +272,7 @@ namespace NekoGui_fmt {
 
             name = url.fragment(QUrl::FullyDecoded);
             serverAddress = url.host();
-            if (serverPort == -1) serverPort = 443;
-            serverPort = url.port();
+            serverPort = port;
 
             uuid = url.userName();
             password = url.password();
@@ -274,10 +283,14 @@ namespace NekoGui_fmt {
             udpRelayMode = query.queryItemValue("udp_relay_mode");
             allowInsecure = query.queryItemValue("allow_insecure") == "1";
             disableSni = query.queryItemValue("disable_sni") == "1";
+
+            if (name.isEmpty()) {
+                name = "TUIC_" + serverAddress;
+            }
         } else if (QStringList{"hy2", "hysteria2"}.contains(url.scheme())) {
             name = url.fragment(QUrl::FullyDecoded);
             serverAddress = url.host();
-            serverPort = url.port();
+            serverPort = port;
             hopPort = query.queryItemValue("mport");
             obfsPassword = query.queryItemValue("obfs-password");
             allowInsecure = QStringList{"1", "true"}.contains(query.queryItemValue("insecure"));
@@ -289,6 +302,12 @@ namespace NekoGui_fmt {
             }
 
             sni = query.queryItemValue("sni");
+            alpn = query.queryItemValue("alpn");
+            if (alpn.isEmpty()) alpn = "h3";
+
+            if (name.isEmpty()) {
+                name = "HYSTERIA2_" + serverAddress;
+            }
         }
 
         return true;
